@@ -1,16 +1,15 @@
-# GoTab Product Mix — Daily Data Pipeline
+# On Par Entertainment — GoTab + Tripleseat Data Pipeline
 
-Automated daily pipeline that fetches the previous day's product mix data from the GoTab API and loads it into a Supabase database. Runs every morning at 4:00 AM EST via Vercel Cron.
+Two automated nightly pipelines that pull revenue data from GoTab (POS) and Tripleseat (events) into a shared Supabase database. Both run via Vercel Cron on the Pro plan.
 
 ---
 
-## What It Does
+## Pipelines
 
-1. Triggers at 4:00 AM EST every day
-2. Fetches all ledger entries for yesterday from the GoTab GraphQL API
-3. Aggregates them into a product mix summary (gross qty, net qty, gross sales, net sales, refunds, comps, voids)
-4. Writes the results to Supabase (`report_dates` + `sales` tables)
-5. Skips silently if that date is already loaded (safe to re-run)
+| Pipeline | Source | Schedule (UTC) | Schedule (ET) |
+|---|---|---|---|
+| GoTab daily sales | GoTab GraphQL API | `0 9 * * *` | 5:00 AM |
+| Tripleseat event sync | Tripleseat REST API + BEO docs | `0 11 * * *` | 7:00 AM |
 
 ---
 
@@ -19,16 +18,28 @@ Automated daily pipeline that fetches the previous day's product mix data from t
 ```
 GoTab_Product_Mix/
   api/
-    daily_fetch.py    # Vercel serverless function — GoTab fetch + Supabase write
-  vercel.json         # Cron schedule (4 AM EST = 9 AM UTC)
-  pyproject.toml      # Vercel Python entrypoint + project metadata (required by uv)
-  requirements.txt    # No third-party dependencies
+    daily_fetch.py        # GoTab: ledger entries → sales table
+    tripleseat_fetch.py   # Tripleseat: bookings + events + leads → ts_* tables
+    beo_parser.py         # Reads Tripleseat BEO documents to split food/bev/events
+  tripleseat_schema.sql   # Run once in Supabase SQL Editor to create ts_* tables
+  vercel.json             # Both cron schedules
+  pyproject.toml
+  requirements.txt
   README.md
 ```
 
 ---
 
-## Supabase Schema
+## GoTab Pipeline
+
+### What It Does
+1. Triggers at 9:00 AM UTC (5 AM ET) every day
+2. Fetches all ledger entries for yesterday from the GoTab GraphQL API
+3. Aggregates into a product mix summary (gross/net qty, gross/net sales, refunds, comps, voids)
+4. Writes to Supabase (`report_dates` + `sales` tables)
+5. Skips silently if that date is already loaded
+
+### Supabase Schema
 
 ```sql
 CREATE TABLE IF NOT EXISTS report_dates (
@@ -58,88 +69,89 @@ CREATE TABLE IF NOT EXISTS sales (
 );
 ```
 
-Run this once in the Supabase SQL Editor to create the tables before deploying.
+### Notes
+- Only `NET_SALES` accounting stream entries are included — taxes, tips, autograt, deferred revenue, and processor entries are excluded
+- GoTab `DEFERRED_REVENUE` entries are Tripleseat event deposits — excluded here, tracked in the Tripleseat pipeline
+- Discounts (negative net sales or "Discount" in product name) are flagged `is_discount = TRUE`
+
+---
+
+## Tripleseat Pipeline
+
+### What It Does
+1. Triggers at 11:00 AM UTC (7 AM ET) every day
+2. Gets a fresh OAuth2 token via `client_credentials` (2-hour expiry)
+3. Paginates through all bookings, events, and leads (~1,600 records each)
+4. For each event, fetches the Banquet Event Order (BEO) portal document to compute the food/beverage/events revenue split
+5. Upserts everything into Supabase (`ts_bookings`, `ts_events`, `ts_leads`)
+
+### Revenue Split Logic (`beo_parser.py`)
+
+The BEO parser determines the food/beverage breakdown using three strategies (tried in order):
+
+| Method | Trigger | Example |
+|---|---|---|
+| `api_split` | Tripleseat already tracks beverage as a separate line item | "The Tap - Beverage Only" sold separately |
+| `desc_card` | Drink card dollar amount found in the combo package description | "Includes a $20 preloaded drink card" |
+| `bev_section_card` | Drink card amount in BEVERAGES section as "included in package" | "@$15 each, included in package" |
+| `unsplit` | No drink card amount determinable | Package description has no card amount |
+| `no_food_bev` | No food or beverage in category totals | Games-only event |
+
+`events_amount` captures booking fees and extra-hour charges, which are separate from food, beverage, and game revenue.
+
+### Supabase Schema
+
+Run `tripleseat_schema.sql` once in the Supabase SQL Editor. Creates:
+
+**`ts_bookings`** — booking-level records (name, status, dates, contact, financials)
+
+**`ts_events`** — event-level records including:
+- `food_amount`, `beverage_amount` — split from BEO document
+- `events_amount` — booking fees + extra hours
+- `split_method` — how food/bev was determined (for auditability)
+- `actual_amount`, `grand_total`, `amount_due` — full financial totals
+
+**`ts_leads`** — lead/inquiry records (contact info, event date, lead source, conversion status)
+
+### Authentication
+Tripleseat uses OAuth2 `client_credentials` grant. A new token is fetched at the start of each sync run — no refresh token storage needed.
 
 ---
 
 ## Environment Variables
 
-Set these in your Vercel project settings under **Settings → Environment Variables**:
+Set in Vercel → Project Settings → Environment Variables:
 
-| Variable | Description |
-|---|---|
-| `GOTAB_API_ACCESS_ID` | GoTab API access ID |
-| `GOTAB_API_ACCESS_SECRET` | GoTab API access secret |
-| `GOTAB_LOCATION_ID` | GoTab location ID (defaults to `112479`) |
-| `SUPABASE_URL` | Supabase project URL (e.g. `https://xxx.supabase.co`) |
-| `SUPABASE_SERVICE_KEY` | Supabase service role key (`sb_secret_...`) |
-| `CRON_SECRET` | A random secret string to secure the cron endpoint |
-
----
-
-## Deployment
-
-### 1. Push to GitHub
-```bash
-cd /path/to/GoTab_Product_Mix
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/GoTab_Product_Mix.git
-git push -u origin main
-```
-
-### 2. Connect to Vercel
-- Go to [vercel.com](https://vercel.com) → **Add New Project**
-- Import the `GoTab_Product_Mix` GitHub repository
-- Add all environment variables listed above
-- Deploy
-
-### 3. Verify the Cron Job
-- In Vercel dashboard → your project → **Cron Jobs** tab
-- You should see one job: `GET /api/daily_fetch` at `0 9 * * *`
-- Click **Trigger** to run it manually and confirm it works
+| Variable | Pipeline | Description |
+|---|---|---|
+| `GOTAB_API_ACCESS_ID` | GoTab | GoTab API access ID |
+| `GOTAB_API_ACCESS_SECRET` | GoTab | GoTab API access secret |
+| `GOTAB_LOCATION_ID` | GoTab | GoTab location ID (defaults to `112479`) |
+| `TS_CLIENT_ID` | Tripleseat | Tripleseat OAuth2 application UID |
+| `TS_CLIENT_SECRET` | Tripleseat | Tripleseat OAuth2 application secret |
+| `SUPABASE_URL` | Both | Supabase project URL (`https://xxx.supabase.co`) |
+| `SUPABASE_SERVICE_KEY` | Both | Supabase service role key (`sb_secret_...`) |
+| `CRON_SECRET` | Both | Random secret to secure cron endpoints |
 
 ---
 
 ## Manual Trigger
 
-Trigger the function from Terminal (browser will return `Unauthorized` due to the `CRON_SECRET` check):
-
 ```bash
+# GoTab
 curl -s -H "Authorization: Bearer YOUR_CRON_SECRET" \
   https://go-tab-product-mix.vercel.app/api/daily_fetch
-```
 
-You'll get a JSON response:
-```json
-{ "status": "ok: loaded 94 rows for 2026-05-20 (net $4,123.45)" }
-```
-
-Or if already loaded:
-```json
-{ "status": "skipped: 2026-05-20 already in database" }
+# Tripleseat
+curl -s -H "Authorization: Bearer YOUR_CRON_SECRET" \
+  https://go-tab-product-mix.vercel.app/api/tripleseat_fetch
 ```
 
 ---
 
-## Category Mapping
+## Deployment
 
-The pipeline maps GoTab product categories to these reporting buckets:
-
-| Bucket | GoTab Category |
-|---|---|
-| Food | Chicken., Pizza and Flatbreads, Pretzels, Fry Platters, Wraps, Half Pound Burgers, Tater Kegs, Extra Sauces and Cheese Dips |
-| Beverage | Beverage (or blank category) |
-| Entertainment | Entertainment — Mini Golf, Bowling, Darts, Pool Table |
-| Karaoke | Reservations — Karaoke, Royal Room, Prime Room, Ocean Room, Disco Room, Gem Room, Royal Sun |
-| Reservations | All other Reservations |
-
----
-
-## Notes
-
-- Only `NET_SALES` accounting stream entries are included — taxes, tips, autograt, deferred revenue, and processor entries are excluded automatically
-- Discounts (negative net sales or "Discount" in product name) are flagged with `is_discount = TRUE`
-- The GoTab API rate limit is 4 requests/sec — the function includes built-in pacing
-- Vercel Cron Jobs require a **Pro plan** or higher
+1. Push to GitHub (this repo)
+2. Connect to Vercel → Import repo → Add all env vars above → Deploy
+3. Verify both cron jobs appear in Vercel → **Cron Jobs** tab
+4. Run `tripleseat_schema.sql` once in the Supabase SQL Editor to create the `ts_*` tables

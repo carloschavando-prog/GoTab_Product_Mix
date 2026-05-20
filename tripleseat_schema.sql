@@ -1,0 +1,90 @@
+-- Tripleseat → Supabase schema
+-- Run this once in the Supabase SQL editor before deploying the pipeline.
+
+CREATE TABLE IF NOT EXISTS ts_bookings (
+    id                  BIGINT      PRIMARY KEY,
+    name                TEXT,
+    status              TEXT,
+    start_date          DATE,
+    end_date            DATE,
+    definite_date       DATE,
+    tentative_date      DATE,
+    lost_date           DATE,
+    total_actual_amount NUMERIC(12, 2),
+    total_grand_total   NUMERIC(12, 2),
+    market_segment      TEXT,
+    contact_id          BIGINT,
+    contact_name        TEXT,
+    contact_email       TEXT,
+    account_id          BIGINT,
+    account_name        TEXT,
+    location_id         BIGINT,
+    created_at          TIMESTAMPTZ,
+    updated_at          TIMESTAMPTZ,
+    deleted_at          TIMESTAMPTZ,
+    synced_at           TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ts_events (
+    id                      BIGINT      PRIMARY KEY,
+    booking_id              BIGINT      REFERENCES ts_bookings (id),
+    name                    TEXT,
+    status                  TEXT,
+    event_date              DATE,
+    event_start             TIMESTAMPTZ,
+    event_end               TIMESTAMPTZ,
+    event_timezone          TEXT,
+    event_type              TEXT,
+    event_style             TEXT,
+    guest_count             INTEGER,
+    guaranteed_guest_count  INTEGER,
+    food_and_beverage_min   NUMERIC(12, 2),
+    price_per_person        NUMERIC(12, 2),
+    deposit_amount          NUMERIC(12, 2),
+    rental_fee              NUMERIC(12, 2),
+    actual_amount           NUMERIC(12, 2),
+    grand_total             NUMERIC(12, 2),
+    amount_due              NUMERIC(12, 2),
+    room_names              TEXT,
+    description             TEXT,
+    -- Revenue breakdown (computed from BEO document + category_totals)
+    food_amount             NUMERIC(12, 2),
+    beverage_amount         NUMERIC(12, 2),
+    events_amount           NUMERIC(12, 2),  -- booking fees + extra hours
+    split_method            TEXT,            -- how food/bev was determined
+    contact_id              BIGINT,
+    account_id              BIGINT,
+    location_id             BIGINT,
+    created_at              TIMESTAMPTZ,
+    updated_at              TIMESTAMPTZ,
+    deleted_at              TIMESTAMPTZ,
+    synced_at               TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ts_leads (
+    id                  BIGINT      PRIMARY KEY,
+    first_name          TEXT,
+    last_name           TEXT,
+    company             TEXT,
+    email_address       TEXT,
+    phone_number        TEXT,
+    event_date          DATE,
+    guest_count         INTEGER,
+    event_description   TEXT,
+    event_style         TEXT,
+    start_time          TEXT,
+    end_time            TEXT,
+    lead_source         TEXT,
+    booking_lead        BOOLEAN,
+    email_opt_in        BOOLEAN,
+    converted_at        TIMESTAMPTZ,
+    turned_down_at      TIMESTAMPTZ,
+    contact_id          BIGINT,
+    account_id          BIGINT,
+    event_id            BIGINT,
+    booking_id          BIGINT,
+    created_at          TIMESTAMPTZ,
+    updated_at          TIMESTAMPTZ,
+    deleted_at          TIMESTAMPTZ,
+    synced_at           TIMESTAMPTZ DEFAULT NOW()
+);
