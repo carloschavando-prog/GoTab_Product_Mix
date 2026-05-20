@@ -1,2 +1,7 @@
+[project]
+name = "gotab-product-mix"
+version = "0.1.0"
+requires-python = ">=3.11"
+
 [tool.vercel]
 entrypoint = "api.daily_fetch:handler"
